@@ -1,0 +1,126 @@
+name: Build IPA (unsigned)
+
+# Builds an UNSIGNED .ipa on a macOS runner so it can be sideloaded from a
+# machine without a Mac (AltStore / SideStore / Sideloadly re-sign it with your
+# own Apple ID). No Apple credentials or secrets are used anywhere in this file.
+#
+# Optional repository variables (Settings > Secrets and variables > Actions >
+# Variables): APP_NAME, APP_BUNDLE_ID. They are read by app.config.js (once the
+# fork-identity commit is applied); leaving them unset uses its defaults.
+
+on:
+  push:
+    paths-ignore:
+      - '**.md'
+  workflow_dispatch:
+
+concurrency:
+  group: build-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # CocoaPods fails on non-UTF-8 locales.
+  LANG: en_US.UTF-8
+  LC_ALL: en_US.UTF-8
+  APP_NAME: ${{ vars.APP_NAME }}
+  APP_BUNDLE_ID: ${{ vars.APP_BUNDLE_ID }}
+
+jobs:
+  build:
+    name: Build .ipa
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Expo SDK 58 needs Node >= 24.3 on the 24 line (>= 22.13 on 22).
+          node-version: 24
+          cache: npm
+
+      # Expo SDK 58 lists Xcode 26.4+ as its minimum. This picks the newest
+      # stable Xcode installed on the runner image; the next step prints it.
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Toolchain versions
+        run: |
+          node -v
+          npm -v
+          xcodebuild -version
+          pod --version
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      # ios/ is generated, not committed (see AGENTS.md "iOS Native Workflow").
+      - name: Expo prebuild (iOS)
+        run: npx expo prebuild -p ios --clean --no-install
+        env:
+          CI: '1'
+
+      - name: Install pods
+        working-directory: ios
+        run: pod install
+
+      - name: Build (Release, unsigned)
+        run: |
+          set -o pipefail
+          WORKSPACE="$(ls -d ios/*.xcworkspace | head -n 1)"
+          SCHEME="$(basename "$WORKSPACE" .xcworkspace)"
+          echo "workspace=$WORKSPACE scheme=$SCHEME"
+          if ! xcodebuild \
+              -workspace "$WORKSPACE" \
+              -scheme "$SCHEME" \
+              -configuration Release \
+              -sdk iphoneos \
+              -destination 'generic/platform=iOS' \
+              -derivedDataPath build \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY="" \
+              build > xcodebuild.log 2>&1; then
+            echo "xcodebuild failed; last 200 lines of the log:"
+            tail -n 200 xcodebuild.log
+            exit 1
+          fi
+          tail -n 5 xcodebuild.log
+
+      - name: Package .ipa
+        id: package
+        run: |
+          set -euo pipefail
+          APP_PATH="$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' -type d | head -n 1)"
+          test -n "$APP_PATH" || { echo "no .app produced"; exit 1; }
+          APP_BASENAME="$(basename "$APP_PATH" .app)"
+          echo "app=$APP_PATH"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$APP_PATH/Info.plist" || true
+          rm -rf Payload
+          mkdir Payload
+          cp -R "$APP_PATH" Payload/
+          IPA_NAME="${APP_BASENAME}-${GITHUB_SHA::7}.ipa"
+          zip -qry "$IPA_NAME" Payload
+          ls -lh "$IPA_NAME"
+          echo "ipa=$IPA_NAME" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.ipa }}
+          path: ${{ steps.package.outputs.ipa }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: xcodebuild.log
+          if-no-files-found: ignore
+          retention-days: 7
