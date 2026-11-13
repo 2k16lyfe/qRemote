@@ -7,9 +7,17 @@ const packageJson = require('./package.json');
 // dev-client build install side-by-side with the App Store build on device.
 const isDevelopmentBuild = process.env.APP_VARIANT === 'development';
 
+// FORK IDENTITY (not upstream): this fork installs beside the App Store qRemote,
+// so it needs its own display name and bundle ID. Both can be overridden from
+// the environment (the build-ipa workflow exposes them as repo variables).
+// Keep the name a single alphanumeric word: expo prebuild derives the Xcode
+// project/scheme/.app name from it, and spaces/punctuation make that fragile.
+const FORK_NAME = process.env.APP_NAME || 'qRemoteX';
+const FORK_BUNDLE_ID = process.env.APP_BUNDLE_ID || 'com.2k16lyfe.qremotex';
+
 module.exports = {
   expo: {
-    name: 'qRemote',
+    name: FORK_NAME,
     slug: 'qremote',
     version: packageJson.version, // Single source of truth: package.json
     orientation: 'portrait',
@@ -29,7 +37,7 @@ module.exports = {
     // can be rewritten by the next prebuild.
     ios: {
       supportsTablet: true,
-      bundleIdentifier: isDevelopmentBuild ? 'com.taylorcox75.expogo' : 'com.qRemote.app',
+      bundleIdentifier: isDevelopmentBuild ? 'com.taylorcox75.expogo' : FORK_BUNDLE_ID,
       appStoreUrl: 'https://apps.apple.com/us/app/qremote-for-qbittorrent/id6756276747',
       infoPlist: {
         // Must be false: RN's StatusBar API (expo-status-bar / FocusAwareStatusBar)
@@ -42,7 +50,7 @@ module.exports = {
         },
         CFBundleURLTypes: [
           {
-            CFBundleURLName: 'com.qRemote.app.magnet',
+            CFBundleURLName: `${FORK_BUNDLE_ID}.magnet`,
             CFBundleURLSchemes: ['magnet'],
           },
         ],
@@ -109,8 +117,11 @@ module.exports = {
         projectId: 'e2539074-777d-46d3-ae9e-9e584f9e9bb0',
       },
     },
+    // FORK: OTA updates are disabled. Upstream's config pointed expo-updates at
+    // taylorcox75's EAS project with EXUpdatesCheckOnLaunch=ALWAYS; left on, this
+    // fork could download upstream's JS bundle over its own changes.
     updates: {
-      url: 'https://u.expo.dev/e2539074-777d-46d3-ae9e-9e584f9e9bb0',
+      enabled: false,
     },
     runtimeVersion: {
       policy: 'appVersion',
